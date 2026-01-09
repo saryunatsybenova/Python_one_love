@@ -1,0 +1,88 @@
+import json
+import psycopg2
+from psycopg2 import sql
+from confluent_kafka import Consumer
+from config import (
+    KAFKA_BOOTSTRAP_SERVERS,
+    TOPIC_NAME,
+    DB_HOST,
+    DB_PORT,
+    DB_NAME,
+    DB_USER,
+    DB_PASSWORD
+)
+
+def create_table_if_not_exists(conn, table_name: str, columns: list):
+    with conn.cursor() as cur:
+        table_ident = sql.Identifier(table_name)
+        cols = [sql.SQL("{} TEXT").format(sql.Identifier(col)) for col in columns]
+        create_stmt = sql.SQL("CREATE TABLE IF NOT EXISTS {} ({})").format(
+            table_ident,
+            sql.SQL(", ").join(cols)
+        )
+        cur.execute(create_stmt)
+    conn.commit()
+
+def insert_rows(conn, table_name: str, columns: list, rows: list):
+    with conn.cursor() as cur:
+        table_ident = sql.Identifier(table_name)
+        cols = sql.SQL(", ").join(map(sql.Identifier, columns))
+        placeholders = sql.SQL(", ").join(sql.Placeholder() * len(columns))
+        insert_stmt = sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
+            table_ident, cols, placeholders
+        )
+        for row in rows:
+            safe_row = [str(v) if v is not None else None for v in row]
+            cur.execute(insert_stmt, safe_row)
+    conn.commit()
+
+def consume_messages():
+    conf = {
+        'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS,
+        'group.id': 'etl_group',
+        'auto.offset.reset': 'earliest'
+    }
+    consumer = Consumer(conf)
+    consumer.subscribe([TOPIC_NAME])
+
+    conn = psycopg2.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD
+    )
+
+    try:
+        while True:
+            msg = consumer.poll(timeout=1.0)
+            if msg is None:
+                continue
+            if msg.error():
+                print(f"Ошибка Kafka: {msg.error()}")
+                continue
+
+            try:
+                data = json.loads(msg.value().decode('utf-8'))
+                print(f"Получено: {data['table']} ({len(data['rows'])} строк)")
+
+                create_table_if_not_exists(conn, data["table"], data["columns"])
+                insert_rows(conn, data["table"], data["columns"], data["rows"])
+                print(f"Данные сохранены в таблицу {data['table']}")
+
+            except json.JSONDecodeError as e:
+                print(f"Невалидный JSON: {e}")
+            except psycopg2.Error as e:
+                print(f"Ошибка PostgreSQL: {e}")
+                conn.rollback()
+            except Exception as e:
+                print(f"Неожиданная ошибка: {e}")
+
+    except KeyboardInterrupt:
+        print("\nОстановка потребителя...")
+    finally:
+        consumer.close()
+        conn.close()
+
+if __name__ == "__main__":
+    consume_messages()

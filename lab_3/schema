@@ -1,0 +1,20 @@
+from typing import Dict, List, Any
+import json
+
+def validate_message(data: Dict[str, Any]) -> bool:
+    required_keys = {"table", "columns", "rows"}
+    if not isinstance(data, dict):
+        return False
+    if not required_keys.issubset(data.keys()):
+        return False
+    if not isinstance(data["table"], str) or not data["table"].strip():
+        return False
+    if not isinstance(data["columns"], list) or not all(isinstance(c, str) for c in data["columns"]):
+        return False
+    if not isinstance(data["rows"], list):
+        return False
+    col_count = len(data["columns"])
+    for row in data["rows"]:
+        if not isinstance(row, list) or len(row) != col_count:
+            return False
+    return True

@@ -1,0 +1,84 @@
+import json
+import sys
+import csv
+from confluent_kafka import Producer
+from schema import validate_message
+from config import KAFKA_BOOTSTRAP_SERVERS, TOPIC_NAME
+
+def delivery_report(err, msg):
+    if err:
+        print(f"Ошибка доставки: {err}")
+    else:
+        print(f"Сообщение отправлено в топик {msg.topic()}")
+
+def send_to_kafka(data_list):
+    conf = {'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS}
+    producer = Producer(conf)
+
+    for data in data_list:
+        if not validate_message(data):
+            print("Невалидные данные:", data)
+            continue
+        try:
+            payload = json.dumps(data, ensure_ascii=False).encode('utf-8')
+            producer.produce(TOPIC_NAME, value=payload, callback=delivery_report)
+        except Exception as e:
+            print(f"Ошибка сериализации: {e}")
+
+    producer.flush()
+
+def parse_csv(file_path):
+    with open(file_path, newline='', encoding='utf-8') as f:
+        reader = csv.reader(f)
+        rows = list(reader)
+        if len(rows) < 2:
+            raise ValueError("CSV должен содержать заголовки и хотя бы одну строку")
+        columns = rows[0]
+        data_rows = rows[1:]
+        return {"table": "csv_table", "columns": columns, "rows": data_rows}
+
+def main():
+    print("Выберите способ ввода данных:")
+    print("1. Вручную (JSON)")
+    print("2. Из CSV файла")
+    print("3. Из JSON файла")
+    choice = input("Ваш выбор (1/2/3): ").strip()
+
+    data_list = []
+
+    if choice == "1":
+        print("Введите JSON (один объект или массив объектов):")
+        raw = sys.stdin.read()
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                data_list = parsed
+            else:
+                data_list = [parsed]
+        except json.JSONDecodeError as e:
+            print("Ошибка JSON:", e)
+            return
+    elif choice == "2":
+        path = input("Путь к CSV файлу: ").strip()
+        try:
+            data_list = [parse_csv(path)]
+        except Exception as e:
+            print("Ошибка чтения CSV:", e)
+            return
+    elif choice == "3":
+        path = input("Путь к JSON файлу: ").strip()
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                parsed = json.load(f)
+                data_list = parsed if isinstance(parsed, list) else [parsed]
+        except Exception as e:
+            print("Ошибка чтения JSON:", e)
+            return
+    else:
+        print("Неверный выбор.")
+        return
+
+    send_to_kafka(data_list)
+
+if __name__ == "__main__":
+    main()

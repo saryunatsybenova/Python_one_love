@@ -1,0 +1,123 @@
+import pandas as pd
+import requests
+from bs4 import BeautifulSoup
+import time
+import re
+
+INPUT_FILE = "Links.xlsx"
+OUTPUT_FILE = "result.xlsx"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+}
+
+def extract_vessel_data(soup):
+   
+    try:
+       
+        name_tag = soup.find("h1", class_="ship-name")
+        name = name_tag.get_text(strip=True) if name_tag else None
+
+        
+        imo = mmsi = ship_type = None
+        table = soup.find("table", class_="table-ship-info")
+        if table:
+            for row in table.find_all("tr"):
+                cells = row.find_all("td")
+                if len(cells) >= 2:
+                    key = cells[0].get_text(strip=True)
+                    value = cells[1].get_text(strip=True)
+                    if "IMO" in key:
+                        imo = value
+                    elif "MMSI" in key:
+                        mmsi = value
+                    elif "Type of ship" in key or "Тип судна" in key:
+                        ship_type = value
+
+        return {
+            "Name": name,
+            "IMO": imo,
+            "MMSI": mmsi,
+            "Type": ship_type
+        }
+    except Exception as e:
+        print(f"Ошибка при извлечении данных: {e}")
+        return None
+
+def is_single_vessel_page(soup):
+    """Проверяет, показана ли страница одного судна (а не список)"""
+    
+    return soup.find("h1", class_="ship-name") is not None
+
+def is_no_results(soup):
+    """Проверяет, нет ли результатов поиска"""
+    no_results = soup.find(string=re.compile(r"не найдено|no vessels found|ничего не найдено", re.IGNORECASE))
+    return no_results is not None
+
+def count_search_results(soup):
+    """Считает количество судов в списке поиска (если это страница поиска)"""
+    
+    items = soup.select("div.vessel-list-item, a[href*='/vessels/']")
+    return len(items)
+
+def process_link(url):
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=15)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, "lxml")
+
+        if is_single_vessel_page(soup):
+            data = extract_vessel_data(soup)
+            return data if data and data["Name"] else None
+
+        result_count = count_search_results(soup)
+        if result_count == 0 or is_no_results(soup):
+            return None  
+        elif result_count == 1:
+           
+            first_link = soup.select_one("a[href*='/vessels/']")
+            if first_link:
+                vessel_url = first_link['href']
+                if not vessel_url.startswith('http'):
+                    vessel_url = 'https://www.vesselfinder.com' + vessel_url
+                
+                return process_link(vessel_url)
+            else:
+                return None
+        else:
+            return None 
+
+    except Exception as e:
+        print(f"Ошибка при обработке {url}: {e}")
+        return None
+
+def main():
+    df_links = pd.read_excel(INPUT_FILE, header=None, names=["url"])
+    results = []
+
+    total = len(df_links)
+    for idx, row in df_links.iterrows():
+        url = row["url"]
+        if not isinstance(url, str) or not url.strip():
+            continue
+        url = url.strip()
+        print(f"[{idx+1}/{total}] Обработка: {url}")
+
+        data = process_link(url)
+        if data:
+            data["Source URL"] = url
+            results.append(data)
+            print(f"  → Найдено: {data['Name']}")
+        else:
+            print("  → Пропущено (0 или >1 судно)")
+
+        time.sleep(1)
+
+    if results:
+        df_result = pd.DataFrame(results)
+        df_result.to_excel(OUTPUT_FILE, index=False)
+        print(f"\nСохранено {len(results)} записей в {OUTPUT_FILE}")
+    else:
+        print("Нет подходящих судов для сохранения.")
+
+if __name__ == "__main__":
+    main()

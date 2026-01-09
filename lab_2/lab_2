@@ -1,0 +1,96 @@
+import re
+import ast
+import types
+
+class JSToPythonTranslator:
+    def __init__(self):
+        self.variables = {}
+        self.functions = {}
+
+    def translate(self, js_code: str) -> str:
+        lines = js_code.strip().splitlines()
+        py_lines = []
+
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("//"):
+                continue
+
+            if line.startswith("let "):
+                py_lines.append(self._translate_let(line))
+            elif line.startswith("function "):
+                func_name, args, body = self._parse_function(lines)
+                py_lines.extend(self._translate_function(func_name, args, body))
+                while lines and not lines[0].strip().endswith("}"):
+                    lines.pop(0)
+                if lines:
+                    lines.pop(0)  
+            elif re.match(r'^\w+\s*\(.*\)\s*;$', line):  
+                py_lines.append(self._translate_call(line))
+            else:
+                raise ValueError(f"Unsupported line: {line}")
+
+        return "\n".join(py_lines)
+
+    def _translate_let(self, line: str) -> str:
+        # let x = 5; → x = 5
+        match = re.match(r'let\s+(\w+)\s*=\s*(.+);?', line)
+        if not match:
+            raise ValueError(f"Invalid let statement: {line}")
+        var_name, value = match.groups()
+        self.variables[var_name] = value
+        return f"{var_name} = {value}"
+
+    def _parse_function(self, lines):
+        header = lines.pop(0).strip()   
+        func_match = re.match(r'function\s+(\w+)\s*\((.*)\)\s*\{', header)
+        if not func_match:
+            raise ValueError("Invalid function declaration")
+        name = func_match.group(1)
+        args = [a.strip() for a in func_match.group(2).split(",")] if func_match.group(2) else []
+
+        body_lines = []
+        while lines and not lines[0].strip().endswith("}"):
+            body_lines.append(lines.pop(0).strip())
+        return name, args, body_lines
+
+    def _translate_function(self, name: str, args: list, body: list) -> list:
+        
+        py_body = []
+        for stmt in body:
+            stmt = stmt.rstrip(';')
+            if stmt.startswith("return "):
+                py_body.append("    " + stmt)
+            else:
+                py_body.append("    " + stmt)  
+
+        args_str = ", ".join(args)
+        py_func = [f"def {name}({args_str}):"]
+        py_func.extend(py_body)
+        self.functions[name] = (args, py_body)
+        return py_func
+
+    def _translate_call(self, line: str) -> str:
+        # add(x, y); → add(x, y)
+        call = line.rstrip(';')
+        return call
+
+    def execute(self, js_code: str):
+        py_code = self.translate(js_code)
+        
+        local_env = {}
+        exec(py_code, {}, local_env)
+        
+        tree = ast.parse(py_code, mode='exec')
+        last_expr = None
+        for node in reversed(tree.body):
+            if isinstance(node, ast.Expr):
+                last_expr = node
+                break
+        if last_expr:
+            expr_code = compile(ast.Expression(last_expr.value), '<expr>', 'eval')
+            result = eval(expr_code, {}, local_env)
+            return result
+        return None
+
+
